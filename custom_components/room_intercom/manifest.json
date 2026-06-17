@@ -1,12 +1,13 @@
 {
   "domain": "room_intercom",
   "name": "Room Intercom",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "documentation": "https://github.com/Abdunazar7/room-intercom",
   "issue_tracker": "https://github.com/Abdunazar7/room-intercom/issues",
   "codeowners": ["@Abdunazar7"],
   "config_flow": true,
   "dependencies": ["http", "ffmpeg", "frontend"],
+  "after_dependencies": ["network"],
   "integration_type": "service",
   "iot_class": "local_push",
   "requirements": []

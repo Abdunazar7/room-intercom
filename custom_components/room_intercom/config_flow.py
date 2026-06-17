@@ -1,14 +1,27 @@
-"""Config flow for Room Intercom — single instance, no input required."""
+"""Config flow for Room Intercom — single instance, optional HTTPS tuning."""
 
 from __future__ import annotations
 
-from homeassistant.config_entries import ConfigFlow
+import voluptuous as vol
 
-from .const import DOMAIN
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    OptionsFlow,
+)
+from homeassistant.core import callback
+
+from .const import (
+    CONF_ENABLE_HTTPS,
+    CONF_PROXY_PORT,
+    DEFAULT_ENABLE_HTTPS,
+    DEFAULT_PROXY_PORT,
+    DOMAIN,
+)
 
 
 class RoomIntercomConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Single-step setup: nothing to configure, everything is runtime."""
+    """Single-step setup: nothing required, everything is runtime."""
 
     VERSION = 1
 
@@ -18,3 +31,31 @@ class RoomIntercomConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             return self.async_create_entry(title="Room Intercom", data={})
         return self.async_show_form(step_id="user")
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> "RoomIntercomOptionsFlow":
+        return RoomIntercomOptionsFlow()
+
+
+class RoomIntercomOptionsFlow(OptionsFlow):
+    """Let the user toggle the built-in HTTPS proxy and its port."""
+
+    async def async_step_init(self, user_input=None):
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        opts = self.config_entry.options
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_ENABLE_HTTPS,
+                    default=opts.get(CONF_ENABLE_HTTPS, DEFAULT_ENABLE_HTTPS),
+                ): bool,
+                vol.Required(
+                    CONF_PROXY_PORT,
+                    default=opts.get(CONF_PROXY_PORT, DEFAULT_PROXY_PORT),
+                ): vol.All(int, vol.Range(min=1, max=65535)),
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)

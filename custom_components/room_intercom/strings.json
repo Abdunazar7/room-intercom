@@ -9,5 +9,17 @@
     "abort": {
       "already_configured": "Room Intercom is already set up."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Room Intercom",
+        "description": "The browser microphone needs HTTPS. Room Intercom can serve a local HTTPS port itself. If another intercom (e.g. BMS Intercom) already serves this port, it is reused automatically.",
+        "data": {
+          "enable_https": "Serve a built-in HTTPS port for the microphone",
+          "proxy_port": "HTTPS port"
+        }
+      }
+    }
   }
 }

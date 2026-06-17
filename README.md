@@ -70,17 +70,37 @@ rooms:
 Hold the button to talk, release to stop. In `rooms` mode, whichever toggles
 are on will play your voice — one, several, or all at once.
 
+## Built-in HTTPS (microphone works out of the box)
+
+Browsers only allow microphone capture in a **secure context** (HTTPS or
+`localhost`). Plain `http://<ip>:8123` silently fails. So Room Intercom starts
+its own small **HTTPS reverse proxy** (default port **8443**, self-signed
+certificate generated automatically) that forwards everything to Home Assistant.
+Open the dashboard via **`https://<ip>:8443`**, accept the certificate once, and
+the microphone works — no add-on, no Caddy, no manual setup.
+
+You can change the port or turn this off in
+**Settings → Devices & Services → Room Intercom → Configure** (e.g. disable it if
+you already terminate HTTPS with your own reverse proxy).
+
+### Running alongside BMS Intercom (domofon)
+
+[BMS Intercom](https://github.com/optomtr/bms-intercom) raises the same kind of
+HTTPS proxy on 8443. The two coexist: **whichever integration starts first binds
+the port, and the other detects it's taken and reuses it** — both proxies
+forward to the same Home Assistant, so the microphone and both integrations work
+through a single `https://<ip>:8443`. No conflict, nothing to configure.
+
 ## Requirements & notes
 
-* **Microphone needs a secure context.** Browsers only allow mic capture over
-  HTTPS (or `localhost`). Open the dashboard via **`https://<ip>:8443`**, or
-  grant the microphone permission in Fully Kiosk. The card uses relative URLs,
-  so it works on whichever address you open.
+* The card uses relative URLs, so it works on whichever address you open
+  (`https://<ip>:8443`, or `http://<ip>:8123` if you have HTTPS elsewhere).
 * **Latency.** LinkPlay/Arylic and similar speakers buffer HTTP streams, so
   expect roughly **1–2 seconds** of delay — fine for an intercom / "come
   upstairs" call, not a phone call.
-* **Set an internal URL** (Settings → System → Network) reachable by the
-  speakers over plain HTTP on the LAN, so they can pull the stream.
+* The stream URL handed to the speaker is always a plain-http LAN address
+  (Home Assistant's own IP and port, detected automatically) — speakers can't
+  use the self-signed HTTPS proxy, and they don't need to.
 * Speakers must support playing an HTTP MP3 stream via `media_player.play_media`
   (Arylic/LinkPlay, Sonos, Music Assistant players, etc. all do).
 

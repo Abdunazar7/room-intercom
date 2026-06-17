@@ -22,15 +22,25 @@ from homeassistant.helpers.network import get_url
 from .const import (
     CARD_FILENAME,
     CARD_URL,
+    CERT_DIR,
+    CERT_FILE,
+    CONF_ENABLE_HTTPS,
+    CONF_PROXY_PORT,
+    DEFAULT_ENABLE_HTTPS,
+    DEFAULT_PROXY_PORT,
     DOMAIN,
+    KEY_FILE,
     SERVICE_START_CALL,
     SERVICE_STOP_CALL,
     STREAM_PATH,
 )
 from .http import IntercomStreamView, IntercomUploadView
+from .proxy import HTTPSProxy
 from .relay import RelayManager
 
 _LOGGER = logging.getLogger(__name__)
+
+_PROXY_KEY = f"{DOMAIN}_https_proxy"
 
 
 def _resolve_ffmpeg_binary(hass: HomeAssistant) -> str:
@@ -43,6 +53,57 @@ def _resolve_ffmpeg_binary(hass: HomeAssistant) -> str:
         from homeassistant.components.ffmpeg import DATA_FFMPEG
 
         return hass.data[DATA_FFMPEG].binary
+
+
+async def _async_start_proxy(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Bring up the built-in HTTPS proxy so the browser mic works.
+
+    Only one proxy per Home Assistant; if the port is already taken (e.g. by the
+    BMS Intercom proxy) we reuse it instead of failing.
+    """
+    if not entry.options.get(CONF_ENABLE_HTTPS, DEFAULT_ENABLE_HTTPS):
+        return
+    if hass.data.get(_PROXY_KEY) is not None:
+        return
+    port = entry.options.get(CONF_PROXY_PORT, DEFAULT_PROXY_PORT)
+    proxy = HTTPSProxy(
+        hass,
+        port,
+        hass.config.path(CERT_DIR, CERT_FILE),
+        hass.config.path(CERT_DIR, KEY_FILE),
+    )
+    hass.data[_PROXY_KEY] = proxy
+    await proxy.async_start()
+
+
+async def _async_speaker_base_url(hass: HomeAssistant) -> str:
+    """Plain-http LAN base the speaker can pull the stream from.
+
+    Speakers (LinkPlay/Arylic etc.) can't use the self-signed HTTPS proxy, so we
+    always point them at Home Assistant's own http port on a LAN IP — never the
+    HTTPS/cloud URL.
+    """
+    port = getattr(hass.http, "server_port", 8123) or 8123
+    try:
+        from homeassistant.components.network import async_get_enabled_source_ips
+
+        for addr in await async_get_enabled_source_ips(hass):
+            text = str(addr)
+            if ":" in text:  # skip IPv6
+                continue
+            if text.startswith(("127.", "169.254.")):
+                continue
+            return f"http://{text}:{port}"
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("Room Intercom: source IP lookup failed: %s", err)
+
+    return get_url(
+        hass,
+        allow_internal=True,
+        allow_external=True,
+        allow_cloud=False,
+        prefer_external=False,
+    ).rstrip("/")
 
 
 async def _register_card(hass: HomeAssistant) -> None:
@@ -69,6 +130,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.http.register_view(IntercomUploadView(manager))
     hass.http.register_view(IntercomStreamView(manager))
     await _register_card(hass)
+    await _async_start_proxy(hass, entry)
 
     async def handle_start_call(call: ServiceCall) -> None:
         session_id = call.data["session"]
@@ -80,15 +142,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.warning("start_call for unknown session %s", session_id)
             return
 
-        # Build the stream URL from HA's own network config — prefer the LAN
-        # address so the speaker can reach it; never use the cloud URL.
-        base = get_url(
-            hass,
-            allow_internal=True,
-            allow_external=True,
-            allow_cloud=False,
-            prefer_external=False,
-        ).rstrip("/")
+        # Plain-http LAN URL — the speaker can't use the self-signed HTTPS proxy.
+        base = await _async_speaker_base_url(hass)
         stream_url = f"{base}{STREAM_PATH}?session={session_id}&token={token}"
 
         if volume is not None:
@@ -150,8 +205,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ),
     )
 
+    entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
+
     _LOGGER.info("Room Intercom set up")
     return True
+
+
+async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload when options (HTTPS toggle / port) change."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -160,6 +222,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     manager: RelayManager | None = data.get("manager")
     if manager is not None:
         await manager.close_all()
+
+    proxy: HTTPSProxy | None = hass.data.pop(_PROXY_KEY, None)
+    if proxy is not None:
+        await proxy.async_stop()
 
     hass.services.async_remove(DOMAIN, SERVICE_START_CALL)
     hass.services.async_remove(DOMAIN, SERVICE_STOP_CALL)
