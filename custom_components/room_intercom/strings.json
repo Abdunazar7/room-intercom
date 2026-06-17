@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Room Intercom",
+        "description": "Set up Room Intercom. There is nothing to configure — pick your speakers later in the Room Intercom card."
+      }
+    },
+    "abort": {
+      "already_configured": "Room Intercom is already set up."
+    }
+  }
+}
