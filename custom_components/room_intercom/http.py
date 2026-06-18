@@ -46,6 +46,14 @@ class IntercomUploadView(HomeAssistantView):
             await ws.close(code=4403, message=b"token mismatch")
             return ws
 
+        # Tell the browser the session exists so it can safely call start_call.
+        # Without this, through the HTTPS proxy start_call can race ahead of
+        # session creation ("start_call for unknown session").
+        try:
+            await ws.send_str("ready")
+        except Exception:  # noqa: BLE001
+            pass
+
         try:
             async for msg in ws:
                 if msg.type == web.WSMsgType.BINARY:

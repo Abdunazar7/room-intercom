@@ -160,10 +160,21 @@ class IntercomBase extends HTMLElement {
       this._ws = new WebSocket(wsUrl);
       this._ws.binaryType = "arraybuffer";
 
+      // Resolve when the relay confirms the session is ready (see http.py).
+      let onReady;
+      const ready = new Promise((res) => (onReady = res));
+      this._ws.onmessage = (ev) => {
+        if (ev.data === "ready") onReady();
+      };
+
       await new Promise((resolve, reject) => {
         this._ws.onopen = resolve;
         this._ws.onerror = () => reject(new Error("connection failed"));
       });
+
+      // Wait for the "ready" handshake before telling speakers to connect, so
+      // start_call never races ahead of session creation (proxy adds a hop).
+      await Promise.race([ready, new Promise((r) => setTimeout(r, 2500))]);
 
       this._source = this._audioCtx.createMediaStreamSource(this._stream);
       this._processor = this._audioCtx.createScriptProcessor(BUFFER_SIZE, 1, 1);

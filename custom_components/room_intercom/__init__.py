@@ -8,6 +8,7 @@ in the Lovelace card at runtime.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
@@ -168,6 +169,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         targets = call.data["entity_id"]
         volume = call.data.get("volume")
 
+        # The upload WebSocket creates the session; through the HTTPS proxy it
+        # may land a moment after start_call. Wait briefly instead of failing.
+        if manager.get(session_id, token) is None:
+            for _ in range(30):
+                await asyncio.sleep(0.1)
+                if manager.get(session_id, token) is not None:
+                    break
         if manager.get(session_id, token) is None:
             _LOGGER.warning("start_call for unknown session %s", session_id)
             return
