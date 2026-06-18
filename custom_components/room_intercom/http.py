@@ -54,6 +54,10 @@ class IntercomUploadView(HomeAssistantView):
         except Exception:  # noqa: BLE001
             pass
 
+        # When the speaker actually connects to the stream, let the browser know
+        # so it can show "speak now" at the right moment.
+        notify = asyncio.create_task(self._notify_playing(ws, session))
+
         try:
             async for msg in ws:
                 if msg.type == web.WSMsgType.BINARY:
@@ -68,10 +72,22 @@ class IntercomUploadView(HomeAssistantView):
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("intercom upload ws error: %s", err)
         finally:
+            notify.cancel()
             # User released / disconnected: flush ffmpeg and let the speaker play
             # the tail to the end instead of being cut off.
             await session.finish()
         return ws
+
+    @staticmethod
+    async def _notify_playing(ws: web.WebSocketResponse, session) -> None:
+        try:
+            await session.wait_first_subscriber()
+            if not ws.closed:
+                await ws.send_str("playing")
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001
+            pass
 
 
 class IntercomStreamView(HomeAssistantView):

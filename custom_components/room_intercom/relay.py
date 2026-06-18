@@ -24,9 +24,11 @@ _LOGGER = logging.getLogger(__name__)
 _READ_SIZE = 4096
 # Per-subscriber queue depth — drop frames if a speaker can't keep up.
 _QUEUE_MAXSIZE = 256
-# Keep recent MP3 output so a late-connecting speaker hears the start.
-# ~128 kbps -> ~16 KB/s; 256 KB ≈ 16 s, more than enough head room.
-_PREROLL_MAX = 256 * 1024
+# Keep a little recent MP3 output so a speaker that connects a moment late
+# doesn't clip — kept small on purpose so we don't hand the speaker a big
+# backlog (which would add to the delay). The card's "get ready" step is what
+# really prevents clipping; this just smooths the seam. ~128 kbps -> ~16 KB/s.
+_PREROLL_MAX = 8 * 1024  # ≈ 0.5 s
 # Hard safety: a session can't outlive this (speaker never connected, etc.).
 _MAX_LIFETIME = 300
 
@@ -77,6 +79,12 @@ class Session:
         self._finishing = False
         self._closed = False
         self._start_lock = asyncio.Lock()
+        # Set when the first speaker pulls the stream, so the browser can show
+        # "speak now" exactly when the speaker has actually connected.
+        self._first_subscriber = asyncio.Event()
+
+    async def wait_first_subscriber(self) -> None:
+        await self._first_subscriber.wait()
 
     async def start(self, ffmpeg_bin: str) -> None:
         async with self._start_lock:
@@ -139,10 +147,11 @@ class Session:
 
     def subscribe(self) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
-        # Hand the speaker the backlog first so it hears the start of the talk.
+        # Hand the speaker the small backlog first to smooth the seam.
         if self._preroll:
             queue.put_nowait(bytes(self._preroll))
         self._subscribers.add(queue)
+        self._first_subscriber.set()
         return queue
 
     def unsubscribe(self, queue: asyncio.Queue) -> None:

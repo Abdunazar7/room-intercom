@@ -17,6 +17,11 @@ const WS_PATH = "/api/room_intercom/ws";
 const SAMPLE_RATE = 48000;
 const BUFFER_SIZE = 4096;
 const FEATURE_PLAY_MEDIA = 512; // MediaPlayerEntityFeature.PLAY_MEDIA
+// After the speaker connects, give it a moment to fill its internal buffer
+// before we tell the user to speak (so the first words aren't clipped).
+const POST_CONNECT_MS = 900;
+// Fallback: show "speak now" even if the "playing" signal never arrives.
+const GET_READY_MAX_MS = 3000;
 
 const STYLES = `
   :host { display: block; }
@@ -139,6 +144,7 @@ class IntercomBase extends HTMLElement {
     }
 
     this._connecting = true;
+    this._speaking = false;
     this._session = this._rand("ic_");
     this._token = this._rand("");
     this._updateButton();
@@ -165,11 +171,26 @@ class IntercomBase extends HTMLElement {
       this._ws = new WebSocket(wsUrl);
       this._ws.binaryType = "arraybuffer";
 
-      // Resolve when the relay confirms the session is ready (see http.py).
+      // Handshakes from the relay (see http.py):
+      //   "ready"   -> session exists, safe to call start_call
+      //   "playing" -> the speaker has connected to the stream
       let onReady;
       const ready = new Promise((res) => (onReady = res));
+      const goSpeak = () => {
+        if (this._speaking || !this._talking) return;
+        this._speaking = true;
+        if (this._goSpeakTimer) {
+          clearTimeout(this._goSpeakTimer);
+          this._goSpeakTimer = null;
+        }
+        this._setStatus("● Speak now — tap to stop", true);
+      };
       this._ws.onmessage = (ev) => {
         if (ev.data === "ready") onReady();
+        else if (ev.data === "playing") {
+          if (this._goSpeakTimer) clearTimeout(this._goSpeakTimer);
+          this._goSpeakTimer = setTimeout(goSpeak, POST_CONNECT_MS);
+        }
       };
 
       await new Promise((resolve, reject) => {
@@ -181,6 +202,7 @@ class IntercomBase extends HTMLElement {
       // start_call never races ahead of session creation (proxy adds a hop).
       await Promise.race([ready, new Promise((r) => setTimeout(r, 2500))]);
 
+      // Start streaming the mic immediately so the speaker has audio to buffer.
       this._source = this._audioCtx.createMediaStreamSource(this._stream);
       this._processor = this._audioCtx.createScriptProcessor(BUFFER_SIZE, 1, 1);
       this._processor.onaudioprocess = (ev) => {
@@ -190,15 +212,18 @@ class IntercomBase extends HTMLElement {
       this._source.connect(this._processor);
       this._processor.connect(this._audioCtx.destination);
 
+      // "Get ready" first; the user speaks once the speaker is buffered. This
+      // keeps the start from being clipped without adding a big pre-roll.
+      this._connecting = false;
+      this._talking = true;
+      this._updateButton();
+      this._setStatus("Get ready…", false);
+      this._goSpeakTimer = setTimeout(goSpeak, GET_READY_MAX_MS);
+
       const data = { session: this._session, token: this._token, entity_id: targets };
       const vol = this._effectiveVolume();
       if (vol != null) data.volume = Number(vol);
       await this._hass.callService("room_intercom", "start_call", data);
-
-      this._connecting = false;
-      this._talking = true;
-      this._updateButton();
-      this._setStatus("● Talking — tap to stop", true);
     } catch (err) {
       this._connecting = false;
       this._setStatus("Error: " + (err && err.message ? err.message : err), false);
@@ -224,6 +249,11 @@ class IntercomBase extends HTMLElement {
   }
 
   async _cleanup() {
+    if (this._goSpeakTimer) {
+      clearTimeout(this._goSpeakTimer);
+      this._goSpeakTimer = null;
+    }
+    this._speaking = false;
     if (this._processor) {
       try {
         this._processor.disconnect();
