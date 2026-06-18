@@ -17,6 +17,7 @@
         "description": "Choose which speakers appear in the Intercom panel. Leave empty to show all media players that support play media. The browser microphone needs HTTPS — Room Intercom can serve a local HTTPS port itself (reused automatically if another intercom already serves it).",
         "data": {
           "speakers": "Intercom speakers (leave empty for all)",
+          "announce": "Announce mode (duck/resume music instead of disconnecting)",
           "enable_https": "Serve a built-in HTTPS port for the microphone",
           "proxy_port": "HTTPS port"
         }

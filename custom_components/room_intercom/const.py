@@ -31,6 +31,14 @@ SERVICE_STOP_CALL = "stop_call"
 # speakers that support play_media (auto-discovery).
 CONF_SPEAKERS = "speakers"
 
+# Play as an "announcement" (duck/pause current music and resume after) instead
+# of replacing the source — so AirPlay / Spotify etc. aren't disconnected.
+# Used only for speakers whose integration supports MEDIA_ANNOUNCE.
+CONF_ANNOUNCE = "announce"
+DEFAULT_ANNOUNCE = True
+# MediaPlayerEntityFeature.MEDIA_ANNOUNCE
+FEATURE_MEDIA_ANNOUNCE = 1 << 20
+
 CONF_ENABLE_HTTPS = "enable_https"
 CONF_PROXY_PORT = "proxy_port"
 DEFAULT_ENABLE_HTTPS = True

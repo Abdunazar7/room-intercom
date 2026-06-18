@@ -31,7 +31,10 @@ from .const import (
     DEFAULT_PROXY_PORT,
     DOMAIN,
     KEY_FILE,
+    CONF_ANNOUNCE,
     CONF_SPEAKERS,
+    DEFAULT_ANNOUNCE,
+    FEATURE_MEDIA_ANNOUNCE,
     PANEL_COMPONENT,
     PANEL_ICON,
     PANEL_TITLE,
@@ -191,16 +194,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 {"entity_id": targets, "volume_level": volume},
                 blocking=False,
             )
-        await hass.services.async_call(
-            "media_player",
-            "play_media",
-            {
-                "entity_id": targets,
+
+        # Play as an announcement where supported, so current music (AirPlay,
+        # Spotify, …) is ducked/paused and resumed instead of disconnected.
+        announce = call.data.get(
+            "announce", entry.options.get(CONF_ANNOUNCE, DEFAULT_ANNOUNCE)
+        )
+        announce_targets: list[str] = []
+        plain_targets: list[str] = []
+        for entity_id in targets:
+            state = hass.states.get(entity_id)
+            features = int(state.attributes.get("supported_features", 0)) if state else 0
+            if announce and (features & FEATURE_MEDIA_ANNOUNCE):
+                announce_targets.append(entity_id)
+            else:
+                plain_targets.append(entity_id)
+
+        async def _play(entities: list[str], as_announce: bool) -> None:
+            data = {
+                "entity_id": entities,
                 "media_content_id": stream_url,
                 "media_content_type": "music",
-            },
-            blocking=False,
-        )
+            }
+            if as_announce:
+                data["announce"] = True
+            await hass.services.async_call(
+                "media_player", "play_media", data, blocking=False
+            )
+
+        if announce_targets:
+            await _play(announce_targets, True)
+        if plain_targets:
+            await _play(plain_targets, False)
 
     async def handle_stop_call(call: ServiceCall) -> None:
         session_id = call.data["session"]
@@ -228,6 +253,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 vol.Optional("volume"): vol.All(
                     vol.Coerce(float), vol.Range(min=0, max=1)
                 ),
+                vol.Optional("announce"): cv.boolean,
             }
         ),
     )

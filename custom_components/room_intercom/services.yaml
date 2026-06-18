@@ -35,6 +35,15 @@ start_call:
           min: 0
           max: 1
           step: 0.05
+    announce:
+      name: Announce
+      description: >-
+        Play as an announcement (duck/resume current music) where the speaker
+        supports it, instead of replacing the source. Defaults to the
+        integration option.
+      required: false
+      selector:
+        boolean:
 
 stop_call:
   name: Stop call

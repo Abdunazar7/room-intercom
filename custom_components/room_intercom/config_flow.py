@@ -13,9 +13,11 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_ANNOUNCE,
     CONF_ENABLE_HTTPS,
     CONF_PROXY_PORT,
     CONF_SPEAKERS,
+    DEFAULT_ANNOUNCE,
     DEFAULT_ENABLE_HTTPS,
     DEFAULT_PROXY_PORT,
     DOMAIN,
@@ -58,6 +60,10 @@ class RoomIntercomOptionsFlow(OptionsFlow):
                         domain="media_player", multiple=True
                     )
                 ),
+                vol.Required(
+                    CONF_ANNOUNCE,
+                    default=opts.get(CONF_ANNOUNCE, DEFAULT_ANNOUNCE),
+                ): bool,
                 vol.Required(
                     CONF_ENABLE_HTTPS,
                     default=opts.get(CONF_ENABLE_HTTPS, DEFAULT_ENABLE_HTTPS),
