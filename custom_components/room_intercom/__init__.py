@@ -130,14 +130,26 @@ async def _register_card(hass: HomeAssistant) -> None:
     add_extra_js_url(hass, CARD_URL)
 
 
+def _safe_remove_panel(hass: HomeAssistant) -> None:
+    """Remove our panel without logging a warning when it isn't registered."""
+    from homeassistant.components import frontend
+
+    try:
+        frontend.async_remove_panel(hass, PANEL_URL_PATH, warn_if_unknown=False)
+    except TypeError:
+        # Older cores without the kwarg — only remove if present.
+        if PANEL_URL_PATH in hass.data.get("frontend_panels", {}):
+            frontend.async_remove_panel(hass, PANEL_URL_PATH)
+
+
 async def _register_panel(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Auto-register a sidebar panel so no manual dashboard is needed."""
-    from homeassistant.components import frontend, panel_custom
+    from homeassistant.components import panel_custom
 
     speakers = entry.options.get(CONF_SPEAKERS, [])
 
     # Re-registering raises; drop any previous panel first (e.g. on reload).
-    frontend.async_remove_panel(hass, PANEL_URL_PATH)
+    _safe_remove_panel(hass)
     try:
         await panel_custom.async_register_panel(
             hass,
@@ -291,9 +303,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if proxy is not None:
         await proxy.async_stop()
 
-    from homeassistant.components import frontend
-
-    frontend.async_remove_panel(hass, PANEL_URL_PATH)
+    _safe_remove_panel(hass)
 
     hass.services.async_remove(DOMAIN, SERVICE_START_CALL)
     hass.services.async_remove(DOMAIN, SERVICE_STOP_CALL)
