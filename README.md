@@ -38,9 +38,18 @@ another floor.
 4. Settings → Devices & Services → **Add Integration** → **Room Intercom**
    (nothing to configure — just confirm).
 
-The Lovelace card is loaded automatically; no manual resource step.
+A sidebar panel **Intercom** appears automatically — no dashboard editing
+needed. The Lovelace card below is optional, for embedding the button in your
+own views.
 
-## Use the card
+## The auto panel (easiest)
+
+After setup, open **Intercom** in the sidebar. It auto-discovers every speaker
+that supports "play media", lists them with toggles, and gives one big button.
+**Tap to talk, tap again to stop** (no press-and-hold). Whichever speakers are
+toggled on play your voice.
+
+## Use the card (optional)
 
 Single-room button (place it inside a room view):
 
@@ -67,7 +76,7 @@ rooms:
     entity: media_player.soundsystem_e5da
 ```
 
-Hold the button to talk, release to stop. In `rooms` mode, whichever toggles
+Tap the button to talk, tap again to stop. In `rooms` mode, whichever toggles
 are on will play your voice — one, several, or all at once.
 
 ## Built-in HTTPS (microphone works out of the box)

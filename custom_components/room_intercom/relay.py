@@ -3,6 +3,12 @@ ffmpeg that ships inside Home Assistant Core, and broadcasts the MP3 stream to
 any speaker that pulls the stream URL.
 
 No Icecast, no external server — everything runs inside HA Core.
+
+Two details make the intercom feel natural despite the speaker's own buffering:
+  * a small pre-roll buffer, so a speaker that connects a second or two after
+    the user starts talking still hears the beginning;
+  * a graceful finish, so when the user stops we close ffmpeg's input and let it
+    flush — the speaker plays the tail to the end instead of being cut off.
 """
 
 from __future__ import annotations
@@ -18,6 +24,11 @@ _LOGGER = logging.getLogger(__name__)
 _READ_SIZE = 4096
 # Per-subscriber queue depth — drop frames if a speaker can't keep up.
 _QUEUE_MAXSIZE = 256
+# Keep recent MP3 output so a late-connecting speaker hears the start.
+# ~128 kbps -> ~16 KB/s; 256 KB ≈ 16 s, more than enough head room.
+_PREROLL_MAX = 256 * 1024
+# Hard safety: a session can't outlive this (speaker never connected, etc.).
+_MAX_LIFETIME = 300
 
 
 def _ffmpeg_args() -> list[str]:
@@ -59,7 +70,11 @@ class Session:
         self.token = token
         self._proc: asyncio.subprocess.Process | None = None
         self._subscribers: set[asyncio.Queue] = set()
+        self._preroll = bytearray()
         self._pump_task: asyncio.Task | None = None
+        self._lifetime_task: asyncio.Task | None = None
+        self._finish_task: asyncio.Task | None = None
+        self._finishing = False
         self._closed = False
         self._start_lock = asyncio.Lock()
 
@@ -75,7 +90,16 @@ class Session:
                 stderr=asyncio.subprocess.DEVNULL,
             )
             self._pump_task = asyncio.create_task(self._pump_stdout())
+            self._lifetime_task = asyncio.create_task(self._lifetime_guard())
             _LOGGER.debug("intercom session %s started", self.id)
+
+    async def _lifetime_guard(self) -> None:
+        try:
+            await asyncio.sleep(_MAX_LIFETIME)
+        except asyncio.CancelledError:
+            return
+        _LOGGER.debug("intercom session %s hit max lifetime", self.id)
+        await self.close()
 
     async def _pump_stdout(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None
@@ -84,6 +108,9 @@ class Session:
                 chunk = await self._proc.stdout.read(_READ_SIZE)
                 if not chunk:
                     break
+                self._preroll += chunk
+                if len(self._preroll) > _PREROLL_MAX:
+                    del self._preroll[: len(self._preroll) - _PREROLL_MAX]
                 for queue in list(self._subscribers):
                     if queue.full():
                         try:
@@ -97,12 +124,12 @@ class Session:
             _LOGGER.debug("intercom session %s stdout ended: %s", self.id, err)
         finally:
             for queue in list(self._subscribers):
-                queue.put_nowait(None)  # EOF sentinel
+                queue.put_nowait(None)  # EOF sentinel -> speaker stream ends
 
     async def feed(self, data: bytes) -> None:
         """Write raw PCM from the browser into ffmpeg stdin."""
         proc = self._proc
-        if proc is None or proc.stdin is None or proc.stdin.is_closing():
+        if self._finishing or proc is None or proc.stdin is None or proc.stdin.is_closing():
             return
         try:
             proc.stdin.write(data)
@@ -112,16 +139,55 @@ class Session:
 
     def subscribe(self) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
+        # Hand the speaker the backlog first so it hears the start of the talk.
+        if self._preroll:
+            queue.put_nowait(bytes(self._preroll))
         self._subscribers.add(queue)
         return queue
 
     def unsubscribe(self, queue: asyncio.Queue) -> None:
         self._subscribers.discard(queue)
 
+    async def finish(self) -> None:
+        """User released: close ffmpeg input, let it flush, let speakers drain."""
+        if self._finishing or self._closed:
+            return
+        self._finishing = True
+        proc = self._proc
+        if proc is not None and proc.stdin is not None and not proc.stdin.is_closing():
+            try:
+                proc.stdin.write_eof()
+            except (OSError, RuntimeError, NotImplementedError):
+                try:
+                    proc.stdin.close()
+                except Exception:  # noqa: BLE001
+                    pass
+        self._finish_task = asyncio.create_task(self._drain_then_close())
+
+    async def _drain_then_close(self) -> None:
+        proc = self._proc
+        if proc is not None:
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=15)
+            except (asyncio.TimeoutError, ProcessLookupError):
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+        # ffmpeg has flushed; the pump pushed an EOF sentinel to each speaker.
+        # Give them a moment to write the tail out before tearing down.
+        for _ in range(60):
+            if not self._subscribers:
+                break
+            await asyncio.sleep(0.1)
+        await self.close()
+
     async def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        if self._lifetime_task is not None:
+            self._lifetime_task.cancel()
         proc = self._proc
         if proc is not None:
             try:

@@ -6,6 +6,12 @@ DOMAIN = "room_intercom"
 CARD_FILENAME = "intercom-card.js"
 CARD_URL = "/room_intercom/intercom-card.js"
 
+# Auto-registered sidebar panel (no manual dashboard needed).
+PANEL_URL_PATH = "intercom"
+PANEL_COMPONENT = "room-intercom-panel"
+PANEL_TITLE = "Intercom"
+PANEL_ICON = "mdi:microphone-message"
+
 # HTTP relay endpoints (no IP/port hardcoded — built from hass at runtime).
 WS_UPLOAD_PATH = "/api/room_intercom/ws"
 STREAM_PATH = "/api/room_intercom/stream"

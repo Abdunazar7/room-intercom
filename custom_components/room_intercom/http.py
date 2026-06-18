@@ -59,6 +59,10 @@ class IntercomUploadView(HomeAssistantView):
             raise
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("intercom upload ws error: %s", err)
+        finally:
+            # User released / disconnected: flush ffmpeg and let the speaker play
+            # the tail to the end instead of being cut off.
+            await session.finish()
         return ws
 
 

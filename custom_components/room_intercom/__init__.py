@@ -30,6 +30,10 @@ from .const import (
     DEFAULT_PROXY_PORT,
     DOMAIN,
     KEY_FILE,
+    PANEL_COMPONENT,
+    PANEL_ICON,
+    PANEL_TITLE,
+    PANEL_URL_PATH,
     SERVICE_START_CALL,
     SERVICE_STOP_CALL,
     STREAM_PATH,
@@ -121,6 +125,27 @@ async def _register_card(hass: HomeAssistant) -> None:
     add_extra_js_url(hass, CARD_URL)
 
 
+async def _register_panel(hass: HomeAssistant) -> None:
+    """Auto-register a sidebar panel so no manual dashboard is needed."""
+    from homeassistant.components import frontend, panel_custom
+
+    # Re-registering raises; drop any previous panel first (e.g. on reload).
+    frontend.async_remove_panel(hass, PANEL_URL_PATH)
+    try:
+        await panel_custom.async_register_panel(
+            hass,
+            frontend_url_path=PANEL_URL_PATH,
+            webcomponent_name=PANEL_COMPONENT,
+            module_url=CARD_URL,
+            sidebar_title=PANEL_TITLE,
+            sidebar_icon=PANEL_ICON,
+            require_admin=False,
+            embed_iframe=False,
+        )
+    except ValueError as err:
+        _LOGGER.debug("Room Intercom: panel already registered: %s", err)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Room Intercom from a config entry."""
     manager = RelayManager(_resolve_ffmpeg_binary(hass))
@@ -130,6 +155,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.http.register_view(IntercomUploadView(manager))
     hass.http.register_view(IntercomStreamView(manager))
     await _register_card(hass)
+    await _register_panel(hass)
     await _async_start_proxy(hass, entry)
 
     async def handle_start_call(call: ServiceCall) -> None:
@@ -226,6 +252,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     proxy: HTTPSProxy | None = hass.data.pop(_PROXY_KEY, None)
     if proxy is not None:
         await proxy.async_stop()
+
+    from homeassistant.components import frontend
+
+    frontend.async_remove_panel(hass, PANEL_URL_PATH)
 
     hass.services.async_remove(DOMAIN, SERVICE_START_CALL)
     hass.services.async_remove(DOMAIN, SERVICE_STOP_CALL)

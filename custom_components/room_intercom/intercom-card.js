@@ -1,48 +1,81 @@
 /**
- * Room Intercom card
+ * Room Intercom — front-end
  *
- * Push-to-talk from a Home Assistant dashboard to any media_player speaker.
- * Captures the microphone, streams raw PCM to the room_intercom relay over a
- * WebSocket, and tells the chosen speakers to play the live stream.
+ * Provides two custom elements from one file:
+ *   <room-intercom-card>   a Lovelace card (single speaker or a room list)
+ *   <room-intercom-panel>  a full-page sidebar panel that auto-discovers all
+ *                          speakers (no dashboard editing needed)
  *
- * Two layouts from one component:
- *   mode: single  -> one button bound to one speaker (place inside a room view)
- *   mode: rooms   -> a list of speakers with toggles + one big talk button
- *
- * Config examples:
- *
- *   type: custom:room-intercom-card
- *   mode: single
- *   title: Call kitchen
- *   entity: media_player.soundsystem_ea93
- *   volume: 0.6
- *
- *   type: custom:room-intercom-card
- *   mode: rooms
- *   title: Intercom
- *   volume: 0.6
- *   rooms:
- *     - name: Living room
- *       entity: media_player.soundsystem_ea93
- *     - name: Bedroom
- *       entity: media_player.soundsystem_e5da
- *
- * URLs are relative to wherever the dashboard is opened, so the card works on
- * http://ip:8123 and https://ip:8443 with no changes. Microphone capture needs
- * a secure context — open the dashboard via HTTPS (8443) or grant the mic
- * permission in Fully Kiosk.
+ * Tap the button to start talking, tap again to stop (no press-and-hold). The
+ * microphone is streamed to the room_intercom relay over a WebSocket; on stop
+ * we just close the socket and the relay flushes so the speaker plays the tail
+ * to the end. URLs are relative, so it works on https://ip:8443 and
+ * http://ip:8123 alike (mic needs the HTTPS one).
  */
 
 const WS_PATH = "/api/room_intercom/ws";
 const SAMPLE_RATE = 48000;
 const BUFFER_SIZE = 4096;
+const FEATURE_PLAY_MEDIA = 512; // MediaPlayerEntityFeature.PLAY_MEDIA
 
-class RoomIntercomCard extends HTMLElement {
+const STYLES = `
+  :host { display: block; }
+  .wrap { font-family: var(--paper-font-body1_-_font-family, sans-serif); }
+  .title { font-size: 1.15rem; font-weight: 600; margin-bottom: 14px; }
+  .rooms { display: flex; flex-direction: column; gap: 4px; margin-bottom: 18px; }
+  .room {
+    display: flex; align-items: center; gap: 12px; font-size: 1rem;
+    padding: 10px 12px; border-radius: 12px; cursor: pointer;
+    background: var(--secondary-background-color, rgba(255,255,255,.04));
+    transition: background .15s;
+  }
+  .room:hover { background: var(--divider-color, rgba(255,255,255,.08)); }
+  .room input { width: 20px; height: 20px; accent-color: var(--primary-color); margin: 0; }
+  .room .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--disabled-text-color, #888); }
+  .room.on .dot { background: var(--success-color, #43a047); }
+  .empty { color: var(--secondary-text-color); font-size: .9rem; padding: 8px 2px 16px; }
+  .talk {
+    position: relative; width: 100%; padding: 26px; border: none; border-radius: 18px;
+    background: var(--primary-color);
+    background: linear-gradient(135deg, var(--primary-color), color-mix(in srgb, var(--primary-color) 70%, #000));
+    color: var(--text-primary-color, #fff); font-size: 1.15rem; font-weight: 700;
+    cursor: pointer; user-select: none; -webkit-user-select: none; touch-action: manipulation;
+    display: flex; align-items: center; justify-content: center; gap: 12px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.25); transition: transform .08s, filter .15s, background .2s;
+  }
+  .talk:active { transform: scale(0.98); }
+  .talk:hover { filter: brightness(1.05); }
+  .talk.connecting {
+    background: var(--warning-color, #ffa600);
+    background: linear-gradient(135deg, var(--warning-color, #ffa600), #c97f00);
+  }
+  .talk.talking {
+    background: var(--error-color, #db4437);
+    background: linear-gradient(135deg, var(--error-color, #db4437), #a32a20);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%,100% { box-shadow: 0 6px 20px rgba(219,68,55,.35); }
+    50% { box-shadow: 0 6px 34px rgba(219,68,55,.85); }
+  }
+  .mic { width: 26px; height: 26px; fill: currentColor; }
+  .status {
+    margin-top: 12px; font-size: .9rem; color: var(--secondary-text-color);
+    text-align: center; min-height: 1.2em;
+  }
+  .status.live { color: var(--error-color, #db4437); font-weight: 600; }
+`;
+
+const MIC_SVG = `<svg class="mic" viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>`;
+
+/** Shared microphone + relay logic. Subclasses provide _getTargets(). */
+class IntercomBase extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
     this._talking = false;
     this._connecting = false;
+    this._volume = null;
     this._session = null;
     this._token = null;
     this._ws = null;
@@ -50,35 +83,11 @@ class RoomIntercomCard extends HTMLElement {
     this._audioCtx = null;
     this._source = null;
     this._processor = null;
-    this._activeTargets = [];
-    this._rendered = false;
   }
 
-  setConfig(config) {
-    const mode = config.mode || (config.rooms ? "rooms" : "single");
-    if (mode === "single" && !config.entity) {
-      throw new Error("room-intercom-card: 'entity' is required in single mode");
-    }
-    if (mode === "rooms" && (!config.rooms || !config.rooms.length)) {
-      throw new Error("room-intercom-card: 'rooms' list is required in rooms mode");
-    }
-    this._config = { ...config, mode };
-    this._rendered = false;
-    if (this.shadowRoot) this._render();
+  _getTargets() {
+    return [];
   }
-
-  set hass(hass) {
-    this._hass = hass;
-    if (!this._rendered) this._render();
-  }
-
-  getCardSize() {
-    return this._config && this._config.mode === "rooms"
-      ? 2 + (this._config.rooms.length || 0)
-      : 2;
-  }
-
-  // ---- helpers -----------------------------------------------------------
 
   _rand(prefix) {
     const a = new Uint8Array(8);
@@ -87,8 +96,6 @@ class RoomIntercomCard extends HTMLElement {
   }
 
   _wsBase() {
-    // hassUrl() returns the base the frontend is connected to, e.g.
-    // https://ip:8443/ — reuse its host so we never hardcode IP/port.
     let base;
     try {
       base = this._hass && this._hass.hassUrl ? this._hass.hassUrl() : location.origin;
@@ -100,36 +107,37 @@ class RoomIntercomCard extends HTMLElement {
     return `${proto}//${url.host}`;
   }
 
-  _selectedTargets() {
-    if (this._config.mode === "single") return [this._config.entity];
-    const checks = this.shadowRoot.querySelectorAll("input[data-entity]");
-    const out = [];
-    checks.forEach((c) => {
-      if (c.checked) out.push(c.getAttribute("data-entity"));
-    });
-    return out;
+  _floatTo16BitPCM(input) {
+    const out = new Int16Array(input.length);
+    for (let i = 0; i < input.length; i++) {
+      let s = Math.max(-1, Math.min(1, input[i]));
+      out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    return out.buffer;
   }
 
-  // ---- talk lifecycle ----------------------------------------------------
+  _toggle() {
+    if (this._talking || this._connecting) this._stopTalk();
+    else this._startTalk();
+  }
 
   async _startTalk() {
     if (this._talking || this._connecting) return;
-    const targets = this._selectedTargets();
+    const targets = this._getTargets();
     if (!targets.length) {
-      this._setStatus("Select at least one room");
+      this._setStatus("Select at least one room", false);
       return;
     }
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      this._setStatus("Mic blocked — open via HTTPS (8443)");
+      this._setStatus("Mic blocked — open the dashboard over HTTPS (:8443)", false);
       return;
     }
 
     this._connecting = true;
-    this._activeTargets = targets;
     this._session = this._rand("ic_");
     this._token = this._rand("");
     this._updateButton();
-    this._setStatus("Connecting…");
+    this._setStatus("Connecting…", false);
 
     try {
       this._stream = await navigator.mediaDevices.getUserMedia({
@@ -154,36 +162,29 @@ class RoomIntercomCard extends HTMLElement {
 
       await new Promise((resolve, reject) => {
         this._ws.onopen = resolve;
-        this._ws.onerror = () => reject(new Error("ws error"));
+        this._ws.onerror = () => reject(new Error("connection failed"));
       });
 
-      // Pipe mic -> PCM16 -> WebSocket.
       this._source = this._audioCtx.createMediaStreamSource(this._stream);
       this._processor = this._audioCtx.createScriptProcessor(BUFFER_SIZE, 1, 1);
       this._processor.onaudioprocess = (ev) => {
         if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
-        const input = ev.inputBuffer.getChannelData(0);
-        this._ws.send(this._floatTo16BitPCM(input));
+        this._ws.send(this._floatTo16BitPCM(ev.inputBuffer.getChannelData(0)));
       };
       this._source.connect(this._processor);
       this._processor.connect(this._audioCtx.destination);
 
-      // Tell the speakers to start pulling the stream.
-      const data = {
-        session: this._session,
-        token: this._token,
-        entity_id: targets,
-      };
-      if (this._config.volume != null) data.volume = Number(this._config.volume);
+      const data = { session: this._session, token: this._token, entity_id: targets };
+      if (this._volume != null) data.volume = Number(this._volume);
       await this._hass.callService("room_intercom", "start_call", data);
 
       this._connecting = false;
       this._talking = true;
       this._updateButton();
-      this._setStatus("Talking…");
+      this._setStatus("● Talking — tap to stop", true);
     } catch (err) {
       this._connecting = false;
-      this._setStatus("Error: " + (err && err.message ? err.message : err));
+      this._setStatus("Error: " + (err && err.message ? err.message : err), false);
       await this._cleanup();
       this._updateButton();
     }
@@ -191,29 +192,18 @@ class RoomIntercomCard extends HTMLElement {
 
   async _stopTalk() {
     if (!this._talking && !this._connecting) return;
-    const targets = this._activeTargets;
-    const session = this._session;
-
+    // Tell the relay we're done so it flushes and the speaker plays the tail,
+    // then close the socket. No media_stop — that would cut the end off.
     try {
       if (this._ws && this._ws.readyState === WebSocket.OPEN) this._ws.send("stop");
     } catch (e) {
       /* ignore */
     }
     await this._cleanup();
-
-    try {
-      await this._hass.callService("room_intercom", "stop_call", {
-        session,
-        entity_id: targets,
-      });
-    } catch (e) {
-      /* ignore */
-    }
-
     this._talking = false;
     this._connecting = false;
     this._updateButton();
-    this._setStatus("Idle");
+    this._setStatus("Idle", false);
   }
 
   async _cleanup() {
@@ -248,20 +238,11 @@ class RoomIntercomCard extends HTMLElement {
     }
   }
 
-  _floatTo16BitPCM(input) {
-    const out = new Int16Array(input.length);
-    for (let i = 0; i < input.length; i++) {
-      let s = Math.max(-1, Math.min(1, input[i]));
-      out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-    }
-    return out.buffer;
-  }
-
-  // ---- rendering ---------------------------------------------------------
-
-  _setStatus(text) {
+  _setStatus(text, live) {
     const el = this.shadowRoot.querySelector(".status");
-    if (el) el.textContent = text;
+    if (!el) return;
+    el.textContent = text;
+    el.classList.toggle("live", !!live);
   }
 
   _updateButton() {
@@ -272,11 +253,57 @@ class RoomIntercomCard extends HTMLElement {
     const label = btn.querySelector(".label");
     if (label) {
       label.textContent = this._talking
-        ? "Release to stop"
+        ? "Stop"
         : this._connecting
         ? "Connecting…"
-        : "Hold to talk";
+        : "Talk";
     }
+  }
+
+  _bindButton() {
+    const btn = this.shadowRoot.querySelector(".talk");
+    if (btn) btn.addEventListener("click", () => this._toggle());
+  }
+
+  disconnectedCallback() {
+    if (this._talking || this._connecting) this._stopTalk();
+  }
+}
+
+/** Lovelace card: mode "single" (one speaker) or "rooms" (toggle list). */
+class RoomIntercomCard extends IntercomBase {
+  setConfig(config) {
+    const mode = config.mode || (config.rooms ? "rooms" : "single");
+    if (mode === "single" && !config.entity) {
+      throw new Error("room-intercom-card: 'entity' is required in single mode");
+    }
+    if (mode === "rooms" && (!config.rooms || !config.rooms.length)) {
+      throw new Error("room-intercom-card: 'rooms' list is required in rooms mode");
+    }
+    this._config = { ...config, mode };
+    this._volume = config.volume != null ? config.volume : null;
+    this._rendered = false;
+    if (this.shadowRoot && this._hass) this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (!this._rendered) this._render();
+  }
+
+  getCardSize() {
+    return this._config && this._config.mode === "rooms"
+      ? 2 + (this._config.rooms.length || 0)
+      : 2;
+  }
+
+  _getTargets() {
+    if (this._config.mode === "single") return [this._config.entity];
+    const out = [];
+    this.shadowRoot.querySelectorAll("input[data-entity]").forEach((c) => {
+      if (c.checked) out.push(c.getAttribute("data-entity"));
+    });
+    return out;
   }
 
   _render() {
@@ -285,17 +312,101 @@ class RoomIntercomCard extends HTMLElement {
     const c = this._config;
     const title = c.title || "Intercom";
 
-    let roomsHtml = "";
+    let rooms = "";
     if (c.mode === "rooms") {
-      roomsHtml =
+      rooms =
         '<div class="rooms">' +
         c.rooms
-          .map((r, i) => {
+          .map((r) => {
             const checked = r.default ? "checked" : "";
             const name = r.name || r.entity;
             return (
-              `<label class="room"><input type="checkbox" data-entity="${r.entity}" ${checked}>` +
-              `<span>${name}</span></label>`
+              `<label class="room ${checked ? "on" : ""}">` +
+              `<input type="checkbox" data-entity="${r.entity}" ${checked}>` +
+              `<span class="dot"></span><span>${name}</span></label>`
+            );
+          })
+          .join("") +
+        "</div>";
+    }
+
+    this.shadowRoot.innerHTML = `
+      <style>${STYLES} ha-card { padding: 16px; }</style>
+      <ha-card><div class="wrap">
+        <div class="title">${title}</div>
+        ${rooms}
+        <button class="talk">${MIC_SVG}<span class="label">Talk</span></button>
+        <div class="status">Idle</div>
+      </div></ha-card>
+    `;
+
+    this.shadowRoot.querySelectorAll(".room").forEach((row) => {
+      const input = row.querySelector("input");
+      input.addEventListener("change", () => row.classList.toggle("on", input.checked));
+    });
+    this._bindButton();
+  }
+}
+
+/** Full-page sidebar panel — auto-discovers every speaker, one talk button. */
+class RoomIntercomPanel extends IntercomBase {
+  constructor() {
+    super();
+    this._rendered = false;
+    this._volume = 0.6;
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (!this._rendered) this._render();
+  }
+  set narrow(v) {}
+  set route(v) {}
+  set panel(v) {}
+
+  _discoverSpeakers() {
+    const hass = this._hass;
+    if (!hass || !hass.states) return [];
+    return Object.values(hass.states)
+      .filter(
+        (s) =>
+          s.entity_id.startsWith("media_player.") &&
+          (Number(s.attributes.supported_features) || 0) & FEATURE_PLAY_MEDIA
+      )
+      .map((s) => ({
+        entity: s.entity_id,
+        name: s.attributes.friendly_name || s.entity_id,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  _getTargets() {
+    const out = [];
+    this.shadowRoot.querySelectorAll("input[data-entity]").forEach((c) => {
+      if (c.checked) out.push(c.getAttribute("data-entity"));
+    });
+    return out;
+  }
+
+  _render() {
+    if (!this._hass || !this.shadowRoot) return;
+    this._rendered = true;
+    const speakers = this._discoverSpeakers();
+
+    let list;
+    if (!speakers.length) {
+      list = `<div class="empty">No speakers found. Add a media player that
+        supports "play media" (Arylic/LinkPlay, Sonos, Music Assistant…).</div>`;
+    } else {
+      list =
+        '<div class="rooms">' +
+        speakers
+          .map((s, i) => {
+            const checked = i === 0 ? "checked" : "";
+            return (
+              `<label class="room ${checked ? "on" : ""}">` +
+              `<input type="checkbox" data-entity="${s.entity}" ${checked}>` +
+              `<span class="dot"></span><span>${s.name}</span></label>`
             );
           })
           .join("") +
@@ -304,65 +415,53 @@ class RoomIntercomCard extends HTMLElement {
 
     this.shadowRoot.innerHTML = `
       <style>
-        ha-card { padding: 16px; }
-        .title { font-size: 1.1rem; font-weight: 600; margin-bottom: 12px; }
-        .rooms { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
-        .room { display: flex; align-items: center; gap: 10px; font-size: 1rem;
-                padding: 6px 4px; cursor: pointer; }
-        .room input { width: 20px; height: 20px; }
-        .talk {
-          width: 100%; padding: 22px; border: none; border-radius: 14px;
-          background: var(--primary-color); color: var(--text-primary-color, #fff);
-          font-size: 1.1rem; font-weight: 600; cursor: pointer; user-select: none;
-          -webkit-user-select: none; touch-action: none; transition: transform .08s, background .15s;
-          display: flex; align-items: center; justify-content: center; gap: 10px;
+        ${STYLES}
+        .page { min-height: 100%; display: flex; align-items: flex-start; justify-content: center;
+                padding: 28px 16px; box-sizing: border-box; }
+        .panel-card {
+          width: 100%; max-width: 460px; background: var(--card-background-color, #1c1c1c);
+          border-radius: 20px; padding: 24px; box-shadow: 0 8px 30px rgba(0,0,0,.35);
         }
-        .talk:active { transform: scale(0.98); }
-        .talk.connecting { background: var(--warning-color, #ffa600); }
-        .talk.talking { background: var(--error-color, #db4437); animation: pulse 1s infinite; }
-        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .75; } }
-        .mic { width: 22px; height: 22px; fill: currentColor; }
-        .status { margin-top: 10px; font-size: .85rem; color: var(--secondary-text-color); text-align: center; }
+        .head { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
+        .head .hmic { width: 28px; height: 28px; fill: var(--primary-color); }
+        .head .htitle { font-size: 1.35rem; font-weight: 700; }
       </style>
-      <ha-card>
-        <div class="title">${title}</div>
-        ${roomsHtml}
-        <button class="talk">
-          <svg class="mic" viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
-          <span class="label">Hold to talk</span>
-        </button>
-        <div class="status">Idle</div>
-      </ha-card>
+      <div class="wrap page">
+        <div class="panel-card">
+          <div class="head">
+            <svg class="hmic" viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
+            <div class="htitle">Intercom</div>
+          </div>
+          ${list}
+          <button class="talk">${MIC_SVG}<span class="label">Talk</span></button>
+          <div class="status">Idle</div>
+        </div>
+      </div>
     `;
 
-    const btn = this.shadowRoot.querySelector(".talk");
-    const start = (e) => {
-      e.preventDefault();
-      this._startTalk();
-    };
-    const stop = (e) => {
-      e.preventDefault();
-      this._stopTalk();
-    };
-    btn.addEventListener("pointerdown", start);
-    btn.addEventListener("pointerup", stop);
-    btn.addEventListener("pointercancel", stop);
-    btn.addEventListener("pointerleave", stop);
-  }
-
-  disconnectedCallback() {
-    if (this._talking || this._connecting) this._stopTalk();
+    this.shadowRoot.querySelectorAll(".room").forEach((row) => {
+      const input = row.querySelector("input");
+      input.addEventListener("change", () => row.classList.toggle("on", input.checked));
+    });
+    this._bindButton();
   }
 }
 
-customElements.define("room-intercom-card", RoomIntercomCard);
+if (!customElements.get("room-intercom-card")) {
+  customElements.define("room-intercom-card", RoomIntercomCard);
+}
+if (!customElements.get("room-intercom-panel")) {
+  customElements.define("room-intercom-panel", RoomIntercomPanel);
+}
 
 window.customCards = window.customCards || [];
-window.customCards.push({
-  type: "room-intercom-card",
-  name: "Room Intercom",
-  description: "Push-to-talk intercom to your speakers",
-  preview: false,
-});
+if (!window.customCards.some((c) => c.type === "room-intercom-card")) {
+  window.customCards.push({
+    type: "room-intercom-card",
+    name: "Room Intercom",
+    description: "Push-to-talk intercom to your speakers",
+    preview: false,
+  });
+}
 
-console.info("%c ROOM-INTERCOM-CARD %c loaded ", "color:#fff;background:#03a9f4", "");
+console.info("%c ROOM-INTERCOM %c card+panel loaded ", "color:#fff;background:#03a9f4", "");
