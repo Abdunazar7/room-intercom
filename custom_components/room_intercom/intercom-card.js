@@ -362,11 +362,30 @@ class RoomIntercomPanel extends IntercomBase {
   }
   set narrow(v) {}
   set route(v) {}
-  set panel(v) {}
+  set panel(p) {
+    this._panel = p;
+    // Config (selected speakers) may arrive after hass — re-render once if idle.
+    if (this._rendered && !this._talking && !this._connecting) {
+      this._rendered = false;
+      this._render();
+    }
+  }
 
-  _discoverSpeakers() {
+  _speakerList() {
     const hass = this._hass;
     if (!hass || !hass.states) return [];
+    const cfg = this._panel && this._panel.config;
+    const chosen = cfg && Array.isArray(cfg.speakers) ? cfg.speakers : null;
+
+    if (chosen && chosen.length) {
+      // Only the speakers picked in the integration options, in that order.
+      return chosen.map((id) => ({
+        entity: id,
+        name: (hass.states[id] && hass.states[id].attributes.friendly_name) || id,
+      }));
+    }
+
+    // Nothing configured yet → auto-discover everything that can play media.
     return Object.values(hass.states)
       .filter(
         (s) =>
@@ -391,12 +410,13 @@ class RoomIntercomPanel extends IntercomBase {
   _render() {
     if (!this._hass || !this.shadowRoot) return;
     this._rendered = true;
-    const speakers = this._discoverSpeakers();
+    const speakers = this._speakerList();
 
     let list;
     if (!speakers.length) {
-      list = `<div class="empty">No speakers found. Add a media player that
-        supports "play media" (Arylic/LinkPlay, Sonos, Music Assistant…).</div>`;
+      list = `<div class="empty">No speakers found. Pick them in Settings →
+        Devices &amp; Services → Room Intercom → Configure, or add a media player
+        that supports "play media".</div>`;
     } else {
       list =
         '<div class="rooms">' +

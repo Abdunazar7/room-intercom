@@ -27,6 +27,10 @@ SERVICE_STOP_CALL = "stop_call"
 # is required for getUserMedia) even when no other HTTPS is present. If another
 # intercom proxy (e.g. BMS Intercom / domofon) already owns the port, whichever
 # starts first binds it and the other simply reuses it — they share one port.
+# Which media_player entities show up in the intercom panel. Empty = show all
+# speakers that support play_media (auto-discovery).
+CONF_SPEAKERS = "speakers"
+
 CONF_ENABLE_HTTPS = "enable_https"
 CONF_PROXY_PORT = "proxy_port"
 DEFAULT_ENABLE_HTTPS = True

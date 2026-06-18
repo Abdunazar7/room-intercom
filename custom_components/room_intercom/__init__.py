@@ -30,6 +30,7 @@ from .const import (
     DEFAULT_PROXY_PORT,
     DOMAIN,
     KEY_FILE,
+    CONF_SPEAKERS,
     PANEL_COMPONENT,
     PANEL_ICON,
     PANEL_TITLE,
@@ -125,9 +126,11 @@ async def _register_card(hass: HomeAssistant) -> None:
     add_extra_js_url(hass, CARD_URL)
 
 
-async def _register_panel(hass: HomeAssistant) -> None:
+async def _register_panel(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Auto-register a sidebar panel so no manual dashboard is needed."""
     from homeassistant.components import frontend, panel_custom
+
+    speakers = entry.options.get(CONF_SPEAKERS, [])
 
     # Re-registering raises; drop any previous panel first (e.g. on reload).
     frontend.async_remove_panel(hass, PANEL_URL_PATH)
@@ -141,6 +144,7 @@ async def _register_panel(hass: HomeAssistant) -> None:
             sidebar_icon=PANEL_ICON,
             require_admin=False,
             embed_iframe=False,
+            config={"speakers": speakers},
         )
     except ValueError as err:
         _LOGGER.debug("Room Intercom: panel already registered: %s", err)
@@ -155,7 +159,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.http.register_view(IntercomUploadView(manager))
     hass.http.register_view(IntercomStreamView(manager))
     await _register_card(hass)
-    await _register_panel(hass)
+    await _register_panel(hass, entry)
     await _async_start_proxy(hass, entry)
 
     async def handle_start_call(call: ServiceCall) -> None:

@@ -10,10 +10,12 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.core import callback
+from homeassistant.helpers import selector
 
 from .const import (
     CONF_ENABLE_HTTPS,
     CONF_PROXY_PORT,
+    CONF_SPEAKERS,
     DEFAULT_ENABLE_HTTPS,
     DEFAULT_PROXY_PORT,
     DOMAIN,
@@ -48,6 +50,14 @@ class RoomIntercomOptionsFlow(OptionsFlow):
         opts = self.config_entry.options
         schema = vol.Schema(
             {
+                vol.Optional(
+                    CONF_SPEAKERS,
+                    default=opts.get(CONF_SPEAKERS, []),
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        domain="media_player", multiple=True
+                    )
+                ),
                 vol.Required(
                     CONF_ENABLE_HTTPS,
                     default=opts.get(CONF_ENABLE_HTTPS, DEFAULT_ENABLE_HTTPS),
