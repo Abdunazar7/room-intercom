@@ -89,6 +89,11 @@ class IntercomBase extends HTMLElement {
     return [];
   }
 
+  // null => don't touch the speaker's current (last Music Assistant) volume.
+  _effectiveVolume() {
+    return this._volume;
+  }
+
   _rand(prefix) {
     const a = new Uint8Array(8);
     crypto.getRandomValues(a);
@@ -186,7 +191,8 @@ class IntercomBase extends HTMLElement {
       this._processor.connect(this._audioCtx.destination);
 
       const data = { session: this._session, token: this._token, entity_id: targets };
-      if (this._volume != null) data.volume = Number(this._volume);
+      const vol = this._effectiveVolume();
+      if (vol != null) data.volume = Number(vol);
       await this._hass.callService("room_intercom", "start_call", data);
 
       this._connecting = false;
@@ -364,7 +370,24 @@ class RoomIntercomPanel extends IntercomBase {
   constructor() {
     super();
     this._rendered = false;
-    this._volume = 0.6;
+    this._volume = null;
+    this._volumeTouched = false;
+  }
+
+  // Only override the volume if the user actually moved the slider; otherwise
+  // leave the speaker at its current (last Music Assistant) level.
+  _effectiveVolume() {
+    return this._volumeTouched ? this._volume : null;
+  }
+
+  _initialVolumePercent(speakers) {
+    const hass = this._hass;
+    for (const sp of speakers) {
+      const st = hass.states[sp.entity];
+      const v = st && st.attributes ? st.attributes.volume_level : undefined;
+      if (typeof v === "number") return Math.round(v * 100);
+    }
+    return 50;
   }
 
   set hass(hass) {
@@ -422,6 +445,8 @@ class RoomIntercomPanel extends IntercomBase {
     if (!this._hass || !this.shadowRoot) return;
     this._rendered = true;
     const speakers = this._speakerList();
+    const initVol = this._initialVolumePercent(speakers);
+    this._volume = initVol / 100;
 
     let list;
     if (!speakers.length) {
@@ -456,6 +481,11 @@ class RoomIntercomPanel extends IntercomBase {
         .head { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
         .head .hmic { width: 28px; height: 28px; fill: var(--primary-color); }
         .head .htitle { font-size: 1.35rem; font-weight: 700; }
+        .volrow { display: flex; align-items: center; gap: 12px; margin: 4px 2px 18px; }
+        .volicon { width: 22px; height: 22px; fill: var(--secondary-text-color); flex: 0 0 auto; }
+        .vol { flex: 1; accent-color: var(--primary-color); height: 22px; }
+        .volval { width: 44px; text-align: right; font-variant-numeric: tabular-nums;
+                  color: var(--secondary-text-color); font-size: .9rem; }
       </style>
       <div class="wrap page">
         <div class="panel-card">
@@ -464,6 +494,15 @@ class RoomIntercomPanel extends IntercomBase {
             <div class="htitle">Intercom</div>
           </div>
           ${list}
+          ${
+            speakers.length
+              ? `<div class="volrow">
+                   <svg class="volicon" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4.03v8.06A4.5 4.5 0 0 0 16.5 12z"/></svg>
+                   <input type="range" class="vol" min="0" max="100" value="${initVol}">
+                   <span class="volval">${initVol}%</span>
+                 </div>`
+              : ""
+          }
           <button class="talk">${MIC_SVG}<span class="label">Talk</span></button>
           <div class="status">Idle</div>
         </div>
@@ -474,6 +513,26 @@ class RoomIntercomPanel extends IntercomBase {
       const input = row.querySelector("input");
       input.addEventListener("change", () => row.classList.toggle("on", input.checked));
     });
+
+    const vol = this.shadowRoot.querySelector(".vol");
+    const val = this.shadowRoot.querySelector(".volval");
+    if (vol) {
+      vol.addEventListener("input", () => {
+        this._volumeTouched = true;
+        this._volume = Number(vol.value) / 100;
+        if (val) val.textContent = vol.value + "%";
+      });
+      // Apply to the selected speakers when the user lets go of the slider.
+      vol.addEventListener("change", () => {
+        const targets = this._getTargets();
+        if (targets.length) {
+          this._hass.callService("media_player", "volume_set", {
+            entity_id: targets,
+            volume_level: Number(vol.value) / 100,
+          });
+        }
+      });
+    }
     this._bindButton();
   }
 }
